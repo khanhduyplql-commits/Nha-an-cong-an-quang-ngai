@@ -56,7 +56,12 @@ interface RestaurantContextType {
   createQuickTestOrder: (targetTableNumber?: string) => TableOrder;
   updateOrderStatus: (orderId: string, status: OrderStatus) => void;
   updateOrderItemStatus: (orderId: string, itemId: string, status: 'pending' | 'cooking' | 'served' | 'cancelled') => void;
-  payOrder: (orderId: string, paymentMethod: 'vietqr' | 'momo' | 'cash' | 'card') => void;
+  payOrder: (
+    orderId: string, 
+    paymentMethod: 'vietqr' | 'momo' | 'cash' | 'card', 
+    customAmount?: number, 
+    explicitOrder?: TableOrder
+  ) => void;
 
   // Service Calls
   serviceCalls: ServiceCall[];
@@ -864,26 +869,37 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     }).catch(console.error);
   };
 
-  const payOrder = (orderId: string, paymentMethod: 'vietqr' | 'momo' | 'cash' | 'card', customAmount?: number) => {
+  const payOrder = (
+    orderId: string, 
+    paymentMethod: 'vietqr' | 'momo' | 'cash' | 'card' = 'vietqr', 
+    customAmount?: number,
+    explicitOrder?: TableOrder
+  ) => {
     // 1. Find the target order immediately
-    const currentOrder = orders.find(o => o.id === orderId);
+    const currentOrder = explicitOrder || orders.find(o => o.id === orderId);
     const tableNum = currentOrder?.tableNumber || activeTableNumber;
     const effectiveAmount = typeof customAmount === 'number' && customAmount > 0 
       ? customAmount 
-      : (currentOrder?.totalAmount || 0);
+      : (currentOrder?.totalAmount || (cart.length > 0 ? cartTotal : 0));
 
     // 2. Mark order paid in state
-    setOrders(prev => prev.map(o => {
-      if (o.id === orderId) {
-        return {
-          ...o,
-          paymentStatus: 'paid',
-          status: 'paid',
-          paymentMethod
-        };
+    setOrders(prev => {
+      const exists = prev.some(o => o.id === orderId);
+      if (!exists && explicitOrder) {
+        return [{ ...explicitOrder, paymentStatus: 'paid', status: 'paid', paymentMethod }, ...prev];
       }
-      return o;
-    }));
+      return prev.map(o => {
+        if (o.id === orderId) {
+          return {
+            ...o,
+            paymentStatus: 'paid',
+            status: 'paid',
+            paymentMethod
+          };
+        }
+        return o;
+      });
+    });
 
     // 3. Reset table status
     if (tableNum) {
@@ -900,8 +916,10 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       const d = new Date();
       const dateStr = getLocalDateString(d);
       const tableName = currentOrder?.tableName || `Bàn ${tableNum}`;
-      const orderNumber = currentOrder?.orderNumber || '#ORD';
-      const itemsList = currentOrder?.items?.map(i => `${i.name} x${i.quantity}`).join(', ') || 'Thực đơn gọi món';
+      const orderNumber = currentOrder?.orderNumber || `#${orderId.slice(-4)}`;
+      const itemsList = currentOrder?.items && currentOrder.items.length > 0 
+        ? currentOrder.items.map(i => `${i.name} x${i.quantity}`).join(', ') 
+        : 'Thực đơn gọi món';
       const customerPayer = currentOrder?.customerName || `Khách ${tableName}`;
 
       const autoTx: CashTransaction = {
@@ -924,10 +942,8 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
       setTransactions(prev => {
         // Prevent duplicate by orderId or id
-        if (prev.some(t => t.orderId === orderId || t.id === autoTx.id)) {
-          return prev;
-        }
-        const next = [autoTx, ...prev];
+        const filtered = prev.filter(t => t.id !== autoTx.id && (!autoTx.orderId || t.orderId !== autoTx.orderId));
+        const next = [autoTx, ...filtered];
         try {
           localStorage.setItem('qr_dinein_transactions', JSON.stringify(next));
         } catch {}

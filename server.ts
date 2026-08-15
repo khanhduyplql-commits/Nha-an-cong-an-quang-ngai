@@ -253,39 +253,43 @@ async function startServer() {
       const effectivePaid = (typeof amount === 'number' && amount > 0) ? amount : foundOrder.totalAmount;
 
       // Auto-record Income transaction in Cashflow ledger if not already recorded
-      const alreadyHasTx = serverTransactions.some(tx => tx.orderId === foundOrder?.id);
-      if (!alreadyHasTx && effectivePaid > 0) {
-        const d = new Date();
-        const year = d.getFullYear();
-        const month = String(d.getMonth() + 1).padStart(2, '0');
-        const day = String(d.getDate()).padStart(2, '0');
-        const dateStr = `${year}-${month}-${day}`;
+      const existingTxIdx = serverTransactions.findIndex(tx => tx.orderId === foundOrder?.id);
+      const d = new Date();
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      const dateStr = `${year}-${month}-${day}`;
 
-        const itemsSummary = foundOrder.items && foundOrder.items.length > 0 
-          ? foundOrder.items.map(i => `${i.name} (x${i.quantity})`).join(', ')
-          : 'Thực đơn gọi món';
+      const itemsSummary = foundOrder.items && foundOrder.items.length > 0 
+        ? foundOrder.items.map(i => `${i.name} (x${i.quantity})`).join(', ')
+        : 'Thực đơn gọi món';
 
-        const autoReceipt: CashTransaction = {
-          id: `tx-auto-${foundOrder.id}-${Date.now()}`,
-          receiptNumber: `PT-${dateStr.replace(/-/g, '')}-${String(serverTransactions.length + 1).padStart(3, '0')}`,
-          type: 'income',
-          category: 'sales',
-          categoryName: 'Doanh thu bán hàng',
-          amount: effectivePaid,
-          title: `Thu tiền ${foundOrder.tableName || `Bàn ${foundOrder.tableNumber}`} (${foundOrder.orderNumber})`,
-          description: `Thanh toán ${(paymentMethod || foundOrder.paymentMethod || 'vietqr').toUpperCase()}. Món: ${itemsSummary}`,
-          paymentMethod: (paymentMethod || foundOrder.paymentMethod || 'vietqr') as any,
-          recordedBy: 'Hệ thống POS Thu ngân',
-          payerOrRecipient: foundOrder.customerName || `Khách ${foundOrder.tableName || `Bàn ${foundOrder.tableNumber}`}`,
-          createdAt: Date.now(),
-          dateString: dateStr,
-          orderId: foundOrder.id,
-          tableNumber: foundOrder.tableNumber
-        };
+      const autoReceipt: CashTransaction = {
+        id: `tx-auto-${foundOrder.id}-${Date.now()}`,
+        receiptNumber: `PT-${dateStr.replace(/-/g, '')}-${String(serverTransactions.length + 1).padStart(3, '0')}`,
+        type: 'income',
+        category: 'sales',
+        categoryName: 'Doanh thu bán hàng',
+        amount: effectivePaid,
+        title: `Thu tiền ${foundOrder.tableName || `Bàn ${foundOrder.tableNumber}`} (${foundOrder.orderNumber})`,
+        description: `Thanh toán ${(paymentMethod || foundOrder.paymentMethod || 'vietqr').toUpperCase()}. Món: ${itemsSummary}`,
+        paymentMethod: (paymentMethod || foundOrder.paymentMethod || 'vietqr') as any,
+        recordedBy: 'Hệ thống POS Thu ngân',
+        payerOrRecipient: foundOrder.customerName || `Khách ${foundOrder.tableName || `Bàn ${foundOrder.tableNumber}`}`,
+        createdAt: Date.now(),
+        dateString: dateStr,
+        orderId: foundOrder.id,
+        tableNumber: foundOrder.tableNumber
+      };
+
+      if (existingTxIdx !== -1) {
+        serverTransactions[existingTxIdx] = autoReceipt;
+      } else if (effectivePaid > 0) {
         serverTransactions = [autoReceipt, ...serverTransactions];
-        console.log(`[CASHFLOW] Auto-recorded income: ${effectivePaid} VND for order ${foundOrder.orderNumber}`);
       }
+      console.log(`[CASHFLOW] Auto-recorded income: ${effectivePaid} VND for order ${foundOrder.orderNumber}`);
 
+      saveStateToDisk();
       broadcastUpdate('order_paid', { id, tableNumber: foundOrder.tableNumber });
       broadcastUpdate('cashflow_updated', serverTransactions);
       return res.json({ success: true, transactions: serverTransactions });
@@ -488,6 +492,7 @@ async function startServer() {
 
   app.delete("/api/cashflow/all", (req, res) => {
     serverTransactions = [];
+    saveStateToDisk();
     broadcastUpdate('cashflow_cleared', []);
     console.log("[CASHFLOW] Cleared all transactions");
     return res.json({ success: true, message: "Cleared all transactions" });
@@ -497,12 +502,14 @@ async function startServer() {
     const { id } = req.params;
     if (id === 'all') {
       serverTransactions = [];
+      saveStateToDisk();
       broadcastUpdate('cashflow_cleared', []);
       return res.json({ success: true, message: "Cleared all transactions" });
     }
     const initialLen = serverTransactions.length;
     serverTransactions = serverTransactions.filter(t => t.id !== id);
     if (serverTransactions.length !== initialLen) {
+      saveStateToDisk();
       broadcastUpdate('cashflow_deleted', { id });
       return res.json({ success: true });
     }

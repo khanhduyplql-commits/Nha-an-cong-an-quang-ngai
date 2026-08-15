@@ -192,15 +192,26 @@ export const CustomerApp: React.FC = () => {
               </button>
 
               {activeTableOrders.length > 0 && (
-                <button
-                  id="btn-track-active-orders"
-                  onClick={() => setIsOrderTrackerOpen(true)}
-                  className="flex-1 sm:flex-initial flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-orange-50 hover:bg-orange-100 text-orange-900 border border-orange-200 text-xs font-bold transition-all active:scale-95 cursor-pointer shadow-2xs relative"
-                >
-                  <Clock className="w-4 h-4 text-orange-600" />
-                  <span>Tiến độ ({totalActiveOrdered})</span>
-                  <span className="w-2 h-2 rounded-full bg-orange-500 absolute -top-1 -right-1 animate-ping"></span>
-                </button>
+                <>
+                  <button
+                    id="btn-track-active-orders"
+                    onClick={() => setIsOrderTrackerOpen(true)}
+                    className="flex-1 sm:flex-initial flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-orange-50 hover:bg-orange-100 text-orange-900 border border-orange-200 text-xs font-bold transition-all active:scale-95 cursor-pointer shadow-2xs relative"
+                  >
+                    <Clock className="w-4 h-4 text-orange-600" />
+                    <span>Tiến độ ({totalActiveOrdered})</span>
+                    <span className="w-2 h-2 rounded-full bg-orange-500 absolute -top-1 -right-1 animate-ping"></span>
+                  </button>
+
+                  <button
+                    id="btn-quick-pay-header"
+                    onClick={() => setIsPaymentOpen(true)}
+                    className="flex-1 sm:flex-initial flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border border-emerald-200 text-xs font-bold transition-all active:scale-95 cursor-pointer shadow-2xs"
+                  >
+                    <CreditCard className="w-4 h-4 text-emerald-600" />
+                    <span>Thanh Toán</span>
+                  </button>
+                </>
               )}
 
               <button

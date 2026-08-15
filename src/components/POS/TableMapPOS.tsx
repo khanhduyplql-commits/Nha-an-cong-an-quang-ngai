@@ -329,7 +329,7 @@ export const TableMapPOS: React.FC = () => {
                 <button
                   onClick={() => {
                     getTableOrders(activeInspectTable.number).forEach(o => {
-                      payOrder(o.id, 'cash');
+                      payOrder(o.id, 'cash', o.totalAmount, o);
                     });
                     setActiveInspectTable(null);
                   }}

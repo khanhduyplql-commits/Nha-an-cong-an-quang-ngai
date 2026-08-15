@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { X, QrCode, CheckCircle2, ShieldCheck, Copy, Check, Banknote, CreditCard, Sparkles, Receipt } from 'lucide-react';
 import { useRestaurant } from '../../context/RestaurantContext';
+import { TableOrder } from '../../types';
 import { formatVND, getVietQRUrl } from '../../utils/format';
 import confetti from 'canvas-confetti';
 
@@ -66,11 +67,30 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, onP
     setTimeout(() => {
       if (activeTableOrders.length > 0) {
         activeTableOrders.forEach(o => {
-          payOrder(o.id, paymentMethod);
+          const oDiscount = Math.round(o.totalAmount * (discountPercent / 100));
+          const oFinal = Math.max(0, o.totalAmount - oDiscount);
+          payOrder(o.id, paymentMethod, oFinal, o);
         });
       } else if (cart.length > 0) {
         const newOrder = submitOrder();
-        payOrder(newOrder.id, paymentMethod);
+        payOrder(newOrder.id, paymentMethod, finalTotal, newOrder);
+      } else {
+        // Fallback for direct table billing
+        const directOrderId = `ord-direct-${Date.now()}`;
+        const dummyOrder: TableOrder = {
+          id: directOrderId,
+          orderNumber: `#${Math.floor(100 + Math.random() * 900)}`,
+          tableNumber: activeTableNumber,
+          tableName: currentTable.name,
+          customerName: `Khách ${currentTable.name}`,
+          createdAt: Date.now(),
+          status: 'paid',
+          paymentStatus: 'paid',
+          totalAmount: finalTotal > 0 ? finalTotal : 100000,
+          items: [],
+          paymentMethod
+        };
+        payOrder(directOrderId, paymentMethod, finalTotal > 0 ? finalTotal : 100000, dummyOrder);
       }
 
       setIsProcessing(false);

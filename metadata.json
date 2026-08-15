@@ -1,0 +1,6 @@
+{
+  "name": "QR Dine-In Ordering & Table Management",
+  "description": "Hệ thống thực đơn điện tử và đặt món tại bàn bằng mã QR cho Nhà ăn Công an tỉnh Quảng Ngãi kèm bảng điều khiển Bếp KDS và quản lý sơ đồ bàn.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

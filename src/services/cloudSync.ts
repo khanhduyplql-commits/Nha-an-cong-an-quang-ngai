@@ -1,18 +1,18 @@
 import { TableOrder, RestaurantTable, MenuItem, ServiceCall, OrderStatus } from '../types';
 
 export type CloudSyncEvent =
-  | { type: 'NEW_ORDER'; order: TableOrder }
-  | { type: 'ORDER_STATUS'; orderId: string; status: OrderStatus; itemId?: string; itemStatus?: string; tableNumber?: string; orderNumber?: string; message?: string }
-  | { type: 'PAY_ORDER'; orderId: string; paymentMethod: string; tableNumber: string; amount?: number }
-  | { type: 'RESET_TABLE'; tableNumber: string }
-  | { type: 'SERVICE_CALL'; serviceCall: ServiceCall }
-  | { type: 'RESOLVE_SERVICE_CALL'; callId: string }
-  | { type: 'MENU_UPDATE'; menuItems: MenuItem[] }
-  | { type: 'TABLES_UPDATE'; tables: RestaurantTable[] }
-  | { type: 'CASHFLOW_ADD'; transaction: import('../types').CashTransaction }
-  | { type: 'CASHFLOW_DELETE'; transactionId: string }
-  | { type: 'CASHFLOW_CLEAR' }
-  | { type: 'CASHFLOW_RESET'; transactions: import('../types').CashTransaction[] }
+  | { type: 'NEW_ORDER' | 'new_order'; order?: TableOrder; data?: any }
+  | { type: 'ORDER_STATUS' | 'order_status'; orderId?: string; status?: OrderStatus; itemId?: string; itemStatus?: string; tableNumber?: string; orderNumber?: string; message?: string; data?: any }
+  | { type: 'PAY_ORDER' | 'order_paid'; orderId?: string; id?: string; paymentMethod?: string; tableNumber?: string; amount?: number; order?: TableOrder; transaction?: import('../types').CashTransaction; transactions?: import('../types').CashTransaction[]; data?: any }
+  | { type: 'RESET_TABLE' | 'reset_table'; tableNumber?: string; data?: any }
+  | { type: 'SERVICE_CALL' | 'service_call'; serviceCall?: ServiceCall; data?: any }
+  | { type: 'RESOLVE_SERVICE_CALL' | 'service_call_resolved'; callId?: string; data?: any }
+  | { type: 'MENU_UPDATE' | 'menu_update' | 'menu_updated'; menuItems?: MenuItem[]; data?: any }
+  | { type: 'TABLES_UPDATE' | 'tables_update' | 'tables_updated'; tables?: RestaurantTable[]; data?: any }
+  | { type: 'CASHFLOW_ADD' | 'cashflow_add' | 'cashflow_updated' | 'CASHFLOW_UPDATE' | 'cashflow_bulk_updated'; transaction?: import('../types').CashTransaction; transactions?: import('../types').CashTransaction[]; data?: any }
+  | { type: 'CASHFLOW_DELETE' | 'cashflow_deleted'; transactionId?: string; data?: any }
+  | { type: 'CASHFLOW_CLEAR' | 'cashflow_cleared'; data?: any }
+  | { type: 'CASHFLOW_RESET' | 'cashflow_reset'; transactions?: import('../types').CashTransaction[]; data?: any }
   | { type: 'SYNC_STATE_REQUEST' }
   | { type: 'SYNC_STATE_RESPONSE'; state: { orders: TableOrder[]; tables: RestaurantTable[]; serviceCalls: ServiceCall[]; transactions?: import('../types').CashTransaction[] } };
 

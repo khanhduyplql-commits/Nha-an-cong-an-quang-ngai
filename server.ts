@@ -406,20 +406,106 @@ async function startServer() {
     if (event && event.type) {
       if (event.type === 'NEW_ORDER' && event.order) {
         const o = event.order;
-        if (!serverOrders.some(existing => existing.id === o.id)) {
+        const existingIdx = serverOrders.findIndex(existing => existing.id === o.id);
+        if (existingIdx === -1) {
           serverOrders = [o, ...serverOrders];
-          serverTables = serverTables.map(t => t.number === o.tableNumber ? { ...t, status: 'eating', activeOrderId: o.id } : t);
+        } else {
+          serverOrders[existingIdx] = o;
         }
+        serverTables = serverTables.map(t => t.number === o.tableNumber ? { ...t, status: 'eating', activeOrderId: o.id } : t);
+        saveStateToDisk();
+      } else if (event.type === 'ORDER_STATUS' && event.orderId) {
+        serverOrders = serverOrders.map(o => {
+          if (o.id === event.orderId) {
+            if (event.itemId && event.itemStatus) {
+              const nextItems = o.items.map(i => i.id === event.itemId ? { ...i, status: event.itemStatus as any } : i);
+              return { ...o, items: nextItems, status: event.status || o.status };
+            }
+            return { ...o, status: event.status || o.status };
+          }
+          return o;
+        });
+        saveStateToDisk();
+      } else if (event.type === 'PAY_ORDER' && event.orderId) {
+        const pOrder = serverOrders.find(o => o.id === event.orderId) || event.order;
+        if (pOrder) {
+          serverOrders = serverOrders.map(o => o.id === event.orderId ? { ...o, paymentStatus: 'paid', status: 'paid', paymentMethod: event.paymentMethod || o.paymentMethod } : o);
+          serverTables = serverTables.map(t => t.number === (event.tableNumber || pOrder.tableNumber) ? { ...t, status: 'empty', activeOrderId: undefined } : t);
+
+          const effectivePaid = event.amount || pOrder.totalAmount;
+          const existingTxIdx = serverTransactions.findIndex(tx => tx.orderId === pOrder.id);
+          const d = new Date();
+          const year = d.getFullYear();
+          const month = String(d.getMonth() + 1).padStart(2, '0');
+          const day = String(d.getDate()).padStart(2, '0');
+          const dateStr = `${year}-${month}-${day}`;
+
+          const autoReceipt: CashTransaction = event.transaction || {
+            id: `tx-auto-${pOrder.id}-${Date.now()}`,
+            receiptNumber: `PT-${dateStr.replace(/-/g, '')}-${String(serverTransactions.length + 1).padStart(3, '0')}`,
+            type: 'income',
+            category: 'sales',
+            categoryName: 'Doanh thu bán hàng',
+            amount: effectivePaid,
+            title: `Thu tiền ${pOrder.tableName || `Bàn ${pOrder.tableNumber}`} (${pOrder.orderNumber})`,
+            description: `Thanh toán ${(event.paymentMethod || pOrder.paymentMethod || 'vietqr').toUpperCase()}`,
+            paymentMethod: (event.paymentMethod || pOrder.paymentMethod || 'vietqr') as any,
+            recordedBy: 'Hệ thống POS Thu ngân',
+            payerOrRecipient: pOrder.customerName || `Khách Bàn ${pOrder.tableNumber}`,
+            createdAt: Date.now(),
+            dateString: dateStr,
+            orderId: pOrder.id,
+            tableNumber: pOrder.tableNumber
+          };
+
+          if (existingTxIdx !== -1) {
+            serverTransactions[existingTxIdx] = autoReceipt;
+          } else if (effectivePaid > 0) {
+            serverTransactions = [autoReceipt, ...serverTransactions];
+          }
+          saveStateToDisk();
+        }
+      } else if (event.type === 'RESET_TABLE' && event.tableNumber) {
+        serverTables = serverTables.map(t => t.number === event.tableNumber ? { ...t, status: 'empty', activeOrderId: undefined } : t);
+        saveStateToDisk();
       } else if (event.type === 'SERVICE_CALL' && event.serviceCall) {
         const sc = event.serviceCall;
         if (!serverServiceCalls.some(existing => existing.id === sc.id)) {
           serverServiceCalls = [sc, ...serverServiceCalls];
         }
+        saveStateToDisk();
+      } else if (event.type === 'RESOLVE_SERVICE_CALL' && event.callId) {
+        serverServiceCalls = serverServiceCalls.map(c => c.id === event.callId ? { ...c, status: 'resolved' } : c);
+        saveStateToDisk();
       } else if (event.type === 'MENU_UPDATE' && Array.isArray(event.menuItems) && event.menuItems.length > 0) {
         serverMenuItems = event.menuItems;
+        saveStateToDisk();
+      } else if (event.type === 'TABLES_UPDATE' && Array.isArray(event.tables)) {
+        serverTables = event.tables;
+        saveStateToDisk();
+      } else if (event.type === 'CASHFLOW_ADD' && event.transaction) {
+        const tx = event.transaction;
+        const existingIdx = serverTransactions.findIndex(
+          t => t.id === tx.id || (tx.orderId && t.orderId === tx.orderId)
+        );
+        if (existingIdx !== -1) {
+          serverTransactions[existingIdx] = tx;
+        } else {
+          serverTransactions = [tx, ...serverTransactions];
+        }
+        saveStateToDisk();
+      } else if (event.type === 'CASHFLOW_DELETE' && event.transactionId) {
+        serverTransactions = serverTransactions.filter(t => t.id !== event.transactionId);
+        saveStateToDisk();
+      } else if (event.type === 'CASHFLOW_CLEAR') {
+        serverTransactions = [];
+        saveStateToDisk();
+      } else if (event.type === 'CASHFLOW_RESET' && Array.isArray(event.transactions)) {
+        serverTransactions = event.transactions;
+        saveStateToDisk();
       }
       broadcastUpdate(event.type.toLowerCase(), event);
-      return res.json({ success: true });
+      return res.json({ success: true, serverTransactions });
     }
     return res.status(400).json({ error: "Invalid event" });
   });
@@ -465,7 +551,7 @@ async function startServer() {
       }
 
       saveStateToDisk();
-      broadcastUpdate('cashflow_updated', finalTx);
+      broadcastUpdate('cashflow_updated', serverTransactions);
       return res.json({ success: true, transaction: finalTx, transactions: serverTransactions });
     } catch (err) {
       return res.status(500).json({ error: "Failed to create transaction" });

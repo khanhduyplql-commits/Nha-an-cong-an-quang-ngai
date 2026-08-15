@@ -392,105 +392,166 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     window.addEventListener('focus', handleFocus);
 
     // Real-Time Cross-Device & Cloud Sync Listener (works on 4G, Wifi, iPhone, Android, PC)
-    const unsubscribeCloud = subscribeToRealtimeSync((event: CloudSyncEvent) => {
+    const unsubscribeCloud = subscribeToRealtimeSync((event: any) => {
       if (!isMounted) return;
 
-      if (event.type === 'NEW_ORDER') {
-        const incomingOrder = event.order;
-        setOrders(prev => {
-          if (prev.some(o => o.id === incomingOrder.id)) return prev;
-          playNotificationSound('order');
-          return [incomingOrder, ...prev];
-        });
-        setTables(prev => prev.map(t => {
-          if (t.number === incomingOrder.tableNumber) {
-            return { ...t, status: 'eating', activeOrderId: incomingOrder.id };
-          }
-          return t;
-        }));
+      const type = event.type?.toLowerCase() || '';
 
-        // Relay to local server as well
-        fetch('/api/orders', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(incomingOrder)
-        }).catch(() => {});
-      } else if (event.type === 'ORDER_STATUS') {
-        const { orderId, status, itemId, itemStatus, tableNumber, orderNumber, message } = event;
-        setOrders(prev => prev.map(o => {
-          if (o.id === orderId) {
-            if (itemId && itemStatus) {
-              const nextItems = o.items.map(i => i.id === itemId ? { ...i, status: itemStatus as any } : i);
-              const allServed = nextItems.every(i => i.status === 'served' || i.status === 'cancelled');
-              const anyCooking = nextItems.some(i => i.status === 'cooking');
-              const nextStatus: OrderStatus = allServed ? 'served' : (anyCooking ? 'cooking' : o.status);
-              return { ...o, items: nextItems, status: nextStatus };
-            } else if (status) {
-              const updatedItems = o.items.map(item => ({
-                ...item,
-                status: status === 'served' ? ('served' as const) : (status === 'cooking' && item.status === 'pending' ? 'cooking' as const : item.status)
-              }));
-              return { ...o, status, items: updatedItems };
+      if (type === 'new_order') {
+        const incomingOrder = event.order || event.data?.order || event.data;
+        if (incomingOrder && incomingOrder.id) {
+          setOrders(prev => {
+            if (prev.some(o => o.id === incomingOrder.id)) return prev;
+            playNotificationSound('order');
+            return [incomingOrder, ...prev];
+          });
+          setTables(prev => prev.map(t => {
+            if (t.number === incomingOrder.tableNumber) {
+              return { ...t, status: 'eating', activeOrderId: incomingOrder.id };
+            }
+            return t;
+          }));
+        }
+      } else if (type === 'order_status') {
+        const orderId = event.orderId || event.data?.orderId || event.data?.id;
+        const status = event.status || event.data?.status;
+        const itemId = event.itemId || event.data?.itemId;
+        const itemStatus = event.itemStatus || event.data?.itemStatus;
+        const tableNumber = event.tableNumber || event.data?.tableNumber;
+        const orderNumber = event.orderNumber || event.data?.orderNumber;
+        const message = event.message || event.data?.message;
+
+        if (orderId) {
+          setOrders(prev => prev.map(o => {
+            if (o.id === orderId) {
+              if (itemId && itemStatus) {
+                const nextItems = o.items.map(i => i.id === itemId ? { ...i, status: itemStatus as any } : i);
+                const allServed = nextItems.every(i => i.status === 'served' || i.status === 'cancelled');
+                const anyCooking = nextItems.some(i => i.status === 'cooking');
+                const nextStatus: OrderStatus = allServed ? 'served' : (anyCooking ? 'cooking' : o.status);
+                return { ...o, items: nextItems, status: nextStatus };
+              } else if (status) {
+                const updatedItems = o.items.map(item => ({
+                  ...item,
+                  status: status === 'served' ? ('served' as const) : (status === 'cooking' && item.status === 'pending' ? 'cooking' as const : item.status)
+                }));
+                return { ...o, status, items: updatedItems };
+              }
+            }
+            return o;
+          }));
+
+          if (status === 'cooking' || status === 'served') {
+            const autoMsg = status === 'cooking' 
+              ? `Bếp đã tiếp nhận đơn và đang thực hiện chế biến!`
+              : `Bếp đã trả đơn và lên đủ món cho bàn của quý khách!`;
+            
+            setKitchenLiveAlert({
+              tableNumber: tableNumber || '',
+              orderId,
+              orderNumber: orderNumber || '',
+              status,
+              message: message || autoMsg,
+              timestamp: Date.now()
+            });
+
+            if (status === 'served') {
+              playNotificationSound('success');
+            } else if (status === 'cooking') {
+              playNotificationSound('order');
             }
           }
-          return o;
-        }));
+        }
+      } else if (type === 'pay_order' || type === 'order_paid') {
+        const orderId = event.orderId || event.id || event.data?.orderId || event.data?.id;
+        const paymentMethod = event.paymentMethod || event.data?.paymentMethod || 'vietqr';
+        const tableNumber = event.tableNumber || event.data?.tableNumber;
 
-        // If the status update affects the customer's active table, show live alert & chime
-        const targetTable = tableNumber;
-        if (status === 'cooking' || status === 'served') {
-          const autoMsg = status === 'cooking' 
-            ? `Bếp đã tiếp nhận đơn và đang thực hiện chế biến!`
-            : `Bếp đã trả đơn và lên đủ món cho bàn của quý khách!`;
-          
-          setKitchenLiveAlert({
-            tableNumber: targetTable || '',
-            orderId,
-            orderNumber: orderNumber || '',
-            status,
-            message: message || autoMsg,
-            timestamp: Date.now()
+        if (orderId) {
+          setOrders(prev => prev.map(o => o.id === orderId ? { ...o, paymentStatus: 'paid', status: 'paid', paymentMethod: paymentMethod as any } : o));
+        }
+        if (tableNumber) {
+          setTables(prev => prev.map(t => t.number === tableNumber ? { ...t, status: 'empty', activeOrderId: undefined } : t));
+        }
+
+        // Direct cashflow receipt ingestion from pay event
+        const incomingTx = event.transaction || event.data?.transaction;
+        if (incomingTx && incomingTx.id) {
+          setTransactions(prev => {
+            if (prev.some(t => t.id === incomingTx.id || (incomingTx.orderId && t.orderId === incomingTx.orderId))) return prev;
+            return [incomingTx, ...prev];
           });
+        }
 
-          if (status === 'served') {
-            playNotificationSound('success');
-          } else if (status === 'cooking') {
-            playNotificationSound('order');
+        const incomingTxs = event.transactions || event.data?.transactions;
+        if (Array.isArray(incomingTxs) && incomingTxs.length > 0) {
+          setTransactions(incomingTxs);
+        }
+
+        playNotificationSound('success');
+        fetchServerState();
+      } else if (type === 'reset_table') {
+        const tableNumber = event.tableNumber || event.data?.tableNumber;
+        if (tableNumber) {
+          setTables(prev => prev.map(t => t.number === tableNumber ? { ...t, status: 'empty', activeOrderId: undefined } : t));
+        }
+      } else if (type === 'service_call') {
+        const sc = event.serviceCall || event.data?.serviceCall || event.data;
+        if (sc && sc.id) {
+          setServiceCalls(prev => {
+            if (prev.some(c => c.id === sc.id)) return prev;
+            playNotificationSound('bell');
+            return [sc, ...prev];
+          });
+        }
+      } else if (type === 'resolve_service_call' || type === 'service_call_resolved') {
+        const callId = event.callId || event.data?.callId || event.data?.id;
+        if (callId) {
+          setServiceCalls(prev => prev.map(c => c.id === callId ? { ...c, status: 'resolved' } : c));
+        }
+      } else if (type === 'menu_update' || type === 'menu_updated') {
+        const menuItems = event.menuItems || event.data?.menuItems || event.data;
+        if (Array.isArray(menuItems) && menuItems.length > 0) {
+          setMenuItems(menuItems);
+        }
+      } else if (type === 'tables_update' || type === 'tables_updated') {
+        const tables = event.tables || event.data?.tables || event.data;
+        if (Array.isArray(tables)) {
+          setTables(tables);
+        }
+      } else if (type === 'cashflow_add' || type === 'cashflow_updated' || type === 'cashflow_update' || type === 'cashflow_bulk_updated') {
+        if (Array.isArray(event.data)) {
+          setTransactions(event.data);
+        } else if (Array.isArray(event.transactions)) {
+          setTransactions(event.transactions);
+        } else if (Array.isArray(event.data?.transactions)) {
+          setTransactions(event.data.transactions);
+        } else {
+          const tx = event.transaction || event.data?.transaction || event.data;
+          if (tx && tx.id) {
+            setTransactions(prev => {
+              const existingIdx = prev.findIndex(t => t.id === tx.id || (tx.orderId && t.orderId === tx.orderId));
+              if (existingIdx !== -1) {
+                const next = [...prev];
+                next[existingIdx] = tx;
+                return next;
+              }
+              return [tx, ...prev];
+            });
           }
         }
-      } else if (event.type === 'PAY_ORDER') {
-        const { orderId, paymentMethod, tableNumber } = event;
-        setOrders(prev => prev.map(o => o.id === orderId ? { ...o, paymentStatus: 'paid', status: 'paid', paymentMethod: paymentMethod as any } : o));
-        setTables(prev => prev.map(t => t.number === tableNumber ? { ...t, status: 'empty', activeOrderId: undefined } : t));
-        playNotificationSound('success');
-      } else if (event.type === 'RESET_TABLE') {
-        const { tableNumber } = event;
-        setTables(prev => prev.map(t => t.number === tableNumber ? { ...t, status: 'empty', activeOrderId: undefined } : t));
-      } else if (event.type === 'SERVICE_CALL') {
-        const { serviceCall } = event;
-        setServiceCalls(prev => {
-          if (prev.some(c => c.id === serviceCall.id)) return prev;
-          playNotificationSound('bell');
-          return [serviceCall, ...prev];
-        });
-      } else if (event.type === 'RESOLVE_SERVICE_CALL') {
-        const { callId } = event;
-        setServiceCalls(prev => prev.map(c => c.id === callId ? { ...c, status: 'resolved' } : c));
-      } else if (event.type === 'MENU_UPDATE') {
-        setMenuItems(event.menuItems);
-      } else if (event.type === 'TABLES_UPDATE') {
-        setTables(event.tables);
-      } else if (event.type === 'CASHFLOW_ADD') {
-        setTransactions(prev => {
-          if (prev.some(t => t.id === event.transaction.id)) return prev;
-          return [event.transaction, ...prev];
-        });
-      } else if (event.type === 'CASHFLOW_DELETE') {
-        setTransactions(prev => prev.filter(t => t.id !== event.transactionId));
-      } else if (event.type === 'CASHFLOW_CLEAR') {
+      } else if (type === 'cashflow_delete' || type === 'cashflow_deleted') {
+        const txId = event.transactionId || event.data?.id || event.data?.transactionId;
+        if (txId) {
+          setTransactions(prev => prev.filter(t => t.id !== txId));
+        }
+      } else if (type === 'cashflow_clear' || type === 'cashflow_cleared') {
         setTransactions([]);
-      } else if (event.type === 'CASHFLOW_RESET') {
-        setTransactions(event.transactions);
+      } else if (type === 'cashflow_reset') {
+        const txs = event.transactions || event.data?.transactions || event.data;
+        if (Array.isArray(txs)) {
+          setTransactions(txs);
+        }
       }
     });
 
@@ -912,6 +973,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     }
 
     // 4. Automatically record Income transaction in Cashflow ledger
+    let autoTx: CashTransaction | null = null;
     if (effectiveAmount > 0) {
       const d = new Date();
       const dateStr = getLocalDateString(d);
@@ -922,7 +984,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         : 'Thực đơn gọi món';
       const customerPayer = currentOrder?.customerName || `Khách ${tableName}`;
 
-      const autoTx: CashTransaction = {
+      autoTx = {
         id: `tx-auto-${orderId}-${Date.now()}`,
         receiptNumber: `PT-${dateStr.replace(/-/g, '')}-${Math.floor(100 + Math.random() * 900)}`,
         type: 'income',
@@ -942,8 +1004,8 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
       setTransactions(prev => {
         // Prevent duplicate by orderId or id
-        const filtered = prev.filter(t => t.id !== autoTx.id && (!autoTx.orderId || t.orderId !== autoTx.orderId));
-        const next = [autoTx, ...filtered];
+        const filtered = prev.filter(t => t.id !== autoTx!.id && (!autoTx!.orderId || t.orderId !== autoTx!.orderId));
+        const next = [autoTx!, ...filtered];
         try {
           localStorage.setItem('qr_dinein_transactions', JSON.stringify(next));
         } catch {}
@@ -961,7 +1023,15 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
     playNotificationSound('success');
 
-    broadcastRealtimeEvent({ type: 'PAY_ORDER', orderId, paymentMethod, tableNumber: tableNum, amount: effectiveAmount }).catch(console.error);
+    broadcastRealtimeEvent({ 
+      type: 'PAY_ORDER', 
+      orderId, 
+      paymentMethod, 
+      tableNumber: tableNum, 
+      amount: effectiveAmount,
+      order: currentOrder,
+      transaction: autoTx || undefined
+    }).catch(console.error);
 
     fetch(`/api/orders/${orderId}/pay`, {
       method: 'POST',
@@ -971,7 +1041,14 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         amount: effectiveAmount,
         order: currentOrder
       })
-    }).catch(console.error);
+    })
+    .then(res => res.json())
+    .then(data => {
+      if (data && Array.isArray(data.transactions)) {
+        setTransactions(data.transactions);
+      }
+    })
+    .catch(console.error);
   };
 
   // Cashflow Management functions

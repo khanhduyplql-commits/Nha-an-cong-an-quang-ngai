@@ -243,12 +243,18 @@ async function startServer() {
         return o;
       });
 
-      serverTables = serverTables.map(t => {
-        if (t.number === foundOrder?.tableNumber) {
-          return { ...t, status: 'empty', activeOrderId: undefined };
-        }
-        return t;
-      });
+      // Only set table to empty if no remaining unpaid orders exist for this table
+      const remainingUnpaidForTable = serverOrders.filter(
+        o => o.tableNumber === foundOrder?.tableNumber && o.id !== id && o.paymentStatus === 'unpaid'
+      );
+      if (remainingUnpaidForTable.length === 0) {
+        serverTables = serverTables.map(t => {
+          if (t.number === foundOrder?.tableNumber) {
+            return { ...t, status: 'empty', activeOrderId: undefined };
+          }
+          return t;
+        });
+      }
 
       const effectivePaid = (typeof amount === 'number' && amount > 0) ? amount : foundOrder.totalAmount;
 
@@ -290,12 +296,108 @@ async function startServer() {
       console.log(`[CASHFLOW] Auto-recorded income: ${effectivePaid} VND for order ${foundOrder.orderNumber}`);
 
       saveStateToDisk();
-      broadcastUpdate('order_paid', { id, tableNumber: foundOrder.tableNumber });
+      broadcastUpdate('order_paid', { id, tableNumber: foundOrder.tableNumber, transactions: serverTransactions });
       broadcastUpdate('cashflow_updated', serverTransactions);
-      return res.json({ success: true, transactions: serverTransactions });
+      return res.json({ success: true, transactions: serverTransactions, transaction: autoReceipt });
     }
 
     return res.status(404).json({ error: "Order not found" });
+  });
+
+  // 6b. Pay Multiple Orders in Batch (e.g. multiple rounds/guests at the same table)
+  app.post("/api/orders/pay-batch", (req, res) => {
+    const { payments } = req.body;
+    if (!Array.isArray(payments) || payments.length === 0) {
+      return res.status(400).json({ error: "Invalid payments array" });
+    }
+
+    const d = new Date();
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    const dateStr = `${year}-${month}-${day}`;
+
+    const processedReceipts: CashTransaction[] = [];
+    const affectedTableNumbers = new Set<string>();
+
+    for (let idx = 0; idx < payments.length; idx++) {
+      const item = payments[idx];
+      const { id, paymentMethod, amount, order: incomingOrder } = item;
+      let foundOrder = serverOrders.find(o => o.id === id);
+      if (!foundOrder && incomingOrder) {
+        foundOrder = incomingOrder;
+        serverOrders = [incomingOrder, ...serverOrders];
+      }
+      if (!foundOrder) continue;
+
+      affectedTableNumbers.add(foundOrder.tableNumber);
+
+      // Mark order paid
+      serverOrders = serverOrders.map(o => {
+        if (o.id === id) {
+          return {
+            ...o,
+            paymentStatus: 'paid',
+            status: 'paid',
+            paymentMethod: paymentMethod || o.paymentMethod || 'vietqr'
+          };
+        }
+        return o;
+      });
+
+      const effectivePaid = (typeof amount === 'number' && amount > 0) ? amount : foundOrder.totalAmount;
+      if (effectivePaid > 0) {
+        const existingTxIdx = serverTransactions.findIndex(tx => tx.orderId === foundOrder?.id);
+        const itemsSummary = foundOrder.items && foundOrder.items.length > 0 
+          ? foundOrder.items.map(i => `${i.name} (x${i.quantity})`).join(', ')
+          : 'Thực đơn gọi món';
+
+        const autoReceipt: CashTransaction = {
+          id: `tx-auto-${foundOrder.id}-${Date.now()}-${idx}`,
+          receiptNumber: `PT-${dateStr.replace(/-/g, '')}-${String(serverTransactions.length + processedReceipts.length + 1).padStart(3, '0')}`,
+          type: 'income',
+          category: 'sales',
+          categoryName: 'Doanh thu bán hàng',
+          amount: effectivePaid,
+          title: `Thu tiền ${foundOrder.tableName || `Bàn ${foundOrder.tableNumber}`} (${foundOrder.orderNumber})`,
+          description: `Thanh toán ${(paymentMethod || foundOrder.paymentMethod || 'vietqr').toUpperCase()}. Món: ${itemsSummary}`,
+          paymentMethod: (paymentMethod || foundOrder.paymentMethod || 'vietqr') as any,
+          recordedBy: 'Hệ thống POS Thu ngân',
+          payerOrRecipient: foundOrder.customerName || `Khách ${foundOrder.tableName || `Bàn ${foundOrder.tableNumber}`}`,
+          createdAt: Date.now() + idx,
+          dateString: dateStr,
+          orderId: foundOrder.id,
+          tableNumber: foundOrder.tableNumber
+        };
+
+        if (existingTxIdx !== -1) {
+          serverTransactions[existingTxIdx] = autoReceipt;
+        } else {
+          serverTransactions = [autoReceipt, ...serverTransactions];
+        }
+        processedReceipts.push(autoReceipt);
+      }
+    }
+
+    // Check table status for each affected table
+    affectedTableNumbers.forEach(tableNum => {
+      const remainingUnpaid = serverOrders.filter(
+        o => o.tableNumber === tableNum && o.paymentStatus === 'unpaid'
+      );
+      if (remainingUnpaid.length === 0) {
+        serverTables = serverTables.map(t => {
+          if (t.number === tableNum) {
+            return { ...t, status: 'empty', activeOrderId: undefined };
+          }
+          return t;
+        });
+      }
+    });
+
+    saveStateToDisk();
+    broadcastUpdate('orders_paid_batch', { payments, receipts: processedReceipts, transactions: serverTransactions });
+    broadcastUpdate('cashflow_updated', serverTransactions);
+    return res.json({ success: true, transactions: serverTransactions, receipts: processedReceipts });
   });
 
   // 7. Reset Table Session
@@ -426,44 +528,68 @@ async function startServer() {
           return o;
         });
         saveStateToDisk();
-      } else if (event.type === 'PAY_ORDER' && event.orderId) {
-        const pOrder = serverOrders.find(o => o.id === event.orderId) || event.order;
-        if (pOrder) {
-          serverOrders = serverOrders.map(o => o.id === event.orderId ? { ...o, paymentStatus: 'paid', status: 'paid', paymentMethod: event.paymentMethod || o.paymentMethod } : o);
-          serverTables = serverTables.map(t => t.number === (event.tableNumber || pOrder.tableNumber) ? { ...t, status: 'empty', activeOrderId: undefined } : t);
-
-          const effectivePaid = event.amount || pOrder.totalAmount;
-          const existingTxIdx = serverTransactions.findIndex(tx => tx.orderId === pOrder.id);
-          const d = new Date();
-          const year = d.getFullYear();
-          const month = String(d.getMonth() + 1).padStart(2, '0');
-          const day = String(d.getDate()).padStart(2, '0');
-          const dateStr = `${year}-${month}-${day}`;
-
-          const autoReceipt: CashTransaction = event.transaction || {
-            id: `tx-auto-${pOrder.id}-${Date.now()}`,
-            receiptNumber: `PT-${dateStr.replace(/-/g, '')}-${String(serverTransactions.length + 1).padStart(3, '0')}`,
-            type: 'income',
-            category: 'sales',
-            categoryName: 'Doanh thu bán hàng',
-            amount: effectivePaid,
-            title: `Thu tiền ${pOrder.tableName || `Bàn ${pOrder.tableNumber}`} (${pOrder.orderNumber})`,
-            description: `Thanh toán ${(event.paymentMethod || pOrder.paymentMethod || 'vietqr').toUpperCase()}`,
-            paymentMethod: (event.paymentMethod || pOrder.paymentMethod || 'vietqr') as any,
-            recordedBy: 'Hệ thống POS Thu ngân',
-            payerOrRecipient: pOrder.customerName || `Khách Bàn ${pOrder.tableNumber}`,
-            createdAt: Date.now(),
-            dateString: dateStr,
-            orderId: pOrder.id,
-            tableNumber: pOrder.tableNumber
-          };
-
-          if (existingTxIdx !== -1) {
-            serverTransactions[existingTxIdx] = autoReceipt;
-          } else if (effectivePaid > 0) {
-            serverTransactions = [autoReceipt, ...serverTransactions];
+      } else if ((event.type === 'PAY_ORDER' || event.type === 'order_paid') && (event.orderId || event.data?.payments || event.data?.orderId)) {
+        if (event.data?.payments && Array.isArray(event.data.payments)) {
+          // Batch payment
+          const payments = event.data.payments;
+          payments.forEach((p: any) => {
+            serverOrders = serverOrders.map(o => o.id === p.id ? { ...o, paymentStatus: 'paid', status: 'paid', paymentMethod: p.paymentMethod || o.paymentMethod } : o);
+          });
+          if (event.data.transactions && Array.isArray(event.data.transactions)) {
+            event.data.transactions.forEach((incomingTx: CashTransaction) => {
+              const eIdx = serverTransactions.findIndex(t => t.id === incomingTx.id || (incomingTx.orderId && t.orderId === incomingTx.orderId));
+              if (eIdx !== -1) {
+                serverTransactions[eIdx] = incomingTx;
+              } else {
+                serverTransactions = [incomingTx, ...serverTransactions];
+              }
+            });
           }
           saveStateToDisk();
+        } else {
+          const targetOrderId = event.orderId || event.data?.orderId;
+          const pOrder = serverOrders.find(o => o.id === targetOrderId) || event.order;
+          if (pOrder) {
+            serverOrders = serverOrders.map(o => o.id === targetOrderId ? { ...o, paymentStatus: 'paid', status: 'paid', paymentMethod: event.paymentMethod || o.paymentMethod } : o);
+            
+            const remainingUnpaid = serverOrders.filter(o => o.tableNumber === (event.tableNumber || pOrder.tableNumber) && o.id !== targetOrderId && o.paymentStatus === 'unpaid');
+            if (remainingUnpaid.length === 0) {
+              serverTables = serverTables.map(t => t.number === (event.tableNumber || pOrder.tableNumber) ? { ...t, status: 'empty', activeOrderId: undefined } : t);
+            }
+
+            const effectivePaid = event.amount || pOrder.totalAmount;
+            const existingTxIdx = serverTransactions.findIndex(tx => tx.orderId === pOrder.id);
+            const d = new Date();
+            const year = d.getFullYear();
+            const month = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            const dateStr = `${year}-${month}-${day}`;
+
+            const autoReceipt: CashTransaction = event.transaction || {
+              id: `tx-auto-${pOrder.id}-${Date.now()}`,
+              receiptNumber: `PT-${dateStr.replace(/-/g, '')}-${String(serverTransactions.length + 1).padStart(3, '0')}`,
+              type: 'income',
+              category: 'sales',
+              categoryName: 'Doanh thu bán hàng',
+              amount: effectivePaid,
+              title: `Thu tiền ${pOrder.tableName || `Bàn ${pOrder.tableNumber}`} (${pOrder.orderNumber})`,
+              description: `Thanh toán ${(event.paymentMethod || pOrder.paymentMethod || 'vietqr').toUpperCase()}`,
+              paymentMethod: (event.paymentMethod || pOrder.paymentMethod || 'vietqr') as any,
+              recordedBy: 'Hệ thống POS Thu ngân',
+              payerOrRecipient: pOrder.customerName || `Khách Bàn ${pOrder.tableNumber}`,
+              createdAt: Date.now(),
+              dateString: dateStr,
+              orderId: pOrder.id,
+              tableNumber: pOrder.tableNumber
+            };
+
+            if (existingTxIdx !== -1) {
+              serverTransactions[existingTxIdx] = autoReceipt;
+            } else if (effectivePaid > 0) {
+              serverTransactions = [autoReceipt, ...serverTransactions];
+            }
+            saveStateToDisk();
+          }
         }
       } else if (event.type === 'RESET_TABLE' && event.tableNumber) {
         serverTables = serverTables.map(t => t.number === event.tableNumber ? { ...t, status: 'empty', activeOrderId: undefined } : t);

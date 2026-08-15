@@ -28,6 +28,7 @@ export const TableMapPOS: React.FC = () => {
     updateTableStatus, 
     resetTableSession, 
     payOrder, 
+    payMultipleOrders,
     setActiveTableNumber,
     restaurantInfo,
     isLiveSynced,
@@ -36,6 +37,7 @@ export const TableMapPOS: React.FC = () => {
 
   const [selectedZone, setSelectedZone] = useState<string>('all');
   const [activeInspectTable, setActiveInspectTable] = useState<RestaurantTable | null>(null);
+  const [posPayMethod, setPosPayMethod] = useState<'cash' | 'vietqr' | 'card'>('cash');
   const [showReceiptModal, setShowReceiptModal] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
@@ -291,12 +293,18 @@ export const TableMapPOS: React.FC = () => {
                   </div>
                 ) : (
                   <div className="space-y-2.5">
-                    {getTableOrders(activeInspectTable.number).map(order => (
+                    {getTableOrders(activeInspectTable.number).map((order, idx) => (
                       <div key={order.id} className="bg-stone-50 p-3.5 rounded-2xl border border-stone-200 space-y-2 text-xs">
                         <div className="flex items-center justify-between font-bold text-stone-800">
-                          <span>{order.orderNumber} ({formatTimeHM(order.createdAt)})</span>
-                          <span className="text-amber-600">{formatVND(order.totalAmount)}</span>
+                          <div className="flex items-center gap-1.5">
+                            <span className="bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded text-3xs font-black">
+                              Đợt {idx + 1}
+                            </span>
+                            <span>{order.orderNumber} ({formatTimeHM(order.createdAt)})</span>
+                          </div>
+                          <span className="text-amber-600 font-extrabold">{formatVND(order.totalAmount)}</span>
                         </div>
+                        
                         <div className="space-y-1">
                           {order.items.map(item => (
                             <div key={item.id} className="flex justify-between text-stone-600 text-2xs">
@@ -305,11 +313,57 @@ export const TableMapPOS: React.FC = () => {
                             </div>
                           ))}
                         </div>
+
+                        {/* Individual batch payment trigger */}
+                        <div className="pt-2 border-t border-stone-200/80 flex items-center justify-between">
+                          <span className="text-3xs text-stone-400">Ghi nhận riêng vào Thu Chi</span>
+                          <button
+                            onClick={() => {
+                              payOrder(order.id, posPayMethod, order.totalAmount, order);
+                              if (getTableOrders(activeInspectTable.number).length <= 1) {
+                                setActiveInspectTable(null);
+                              }
+                            }}
+                            className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-3xs font-bold rounded-lg border border-emerald-200 transition-colors flex items-center gap-1 cursor-pointer"
+                          >
+                            <DollarSign className="w-3 h-3 text-emerald-600" />
+                            <span>Thu riêng đợt này ({formatVND(order.totalAmount)})</span>
+                          </button>
+                        </div>
                       </div>
                     ))}
                   </div>
                 )}
               </div>
+
+              {/* Payment Method selector for POS */}
+              {getTableTotal(activeInspectTable.number) > 0 && (
+                <div>
+                  <label className="block text-2xs font-bold text-stone-500 uppercase tracking-wider mb-1.5">
+                    Phương thức thanh toán:
+                  </label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {[
+                      { id: 'cash' as const, label: 'Tiền mặt' },
+                      { id: 'vietqr' as const, label: 'VietQR' },
+                      { id: 'card' as const, label: 'Quẹt thẻ' }
+                    ].map(pm => (
+                      <button
+                        key={pm.id}
+                        type="button"
+                        onClick={() => setPosPayMethod(pm.id)}
+                        className={`py-1.5 px-2 rounded-xl text-xs font-semibold border transition-all cursor-pointer text-center ${
+                          posPayMethod === pm.id
+                            ? 'bg-emerald-600 text-white border-emerald-600 shadow-2xs font-bold'
+                            : 'bg-stone-50 text-stone-700 border-stone-200 hover:bg-stone-100'
+                        }`}
+                      >
+                        {pm.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Footer Actions */}
@@ -327,16 +381,21 @@ export const TableMapPOS: React.FC = () => {
 
               {getTableTotal(activeInspectTable.number) > 0 && (
                 <button
-                  onClick={() => {
-                    getTableOrders(activeInspectTable.number).forEach(o => {
-                      payOrder(o.id, 'cash', o.totalAmount, o);
-                    });
+                  onClick={async () => {
+                    const tableOrders = getTableOrders(activeInspectTable.number);
+                    const batchPayments = tableOrders.map(o => ({
+                      id: o.id,
+                      amount: o.totalAmount,
+                      paymentMethod: posPayMethod,
+                      order: o
+                    }));
+                    await payMultipleOrders(batchPayments);
                     setActiveInspectTable(null);
                   }}
                   className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1.5 shadow-md transition-all cursor-pointer"
                 >
                   <DollarSign className="w-4 h-4" />
-                  <span>Thu Tiền ({formatVND(getTableTotal(activeInspectTable.number))})</span>
+                  <span>Thu Toàn Bộ ({formatVND(getTableTotal(activeInspectTable.number))})</span>
                 </button>
               )}
             </div>

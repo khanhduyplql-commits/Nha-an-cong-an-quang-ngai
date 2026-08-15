@@ -25,7 +25,7 @@ import {
   X
 } from 'lucide-react';
 import { useRestaurant } from '../../context/RestaurantContext';
-import { MenuItem, MealCategory, CartItem } from '../../types';
+import { MenuItem, MealCategory, CartItem, TableOrder } from '../../types';
 import { FoodCard } from './FoodCard';
 import { FoodDetailModal } from './FoodDetailModal';
 import { CartDrawer } from './CartDrawer';
@@ -64,6 +64,7 @@ export const CustomerApp: React.FC = () => {
   const [isOrderTrackerOpen, setIsOrderTrackerOpen] = useState(false);
   const [isServiceCallOpen, setIsServiceCallOpen] = useState(false);
   const [isPaymentOpen, setIsPaymentOpen] = useState(false);
+  const [paymentTargetOrder, setPaymentTargetOrder] = useState<TableOrder | null>(null);
   const [isFeedbackOpen, setIsFeedbackOpen] = useState(false);
   const [isTableSelectOpen, setIsTableSelectOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -478,13 +479,19 @@ export const CustomerApp: React.FC = () => {
         isOpen={isCartOpen}
         onClose={() => setIsCartOpen(false)}
         onOrderSubmitted={() => setIsOrderTrackerOpen(true)}
-        onOpenPayment={() => setIsPaymentOpen(true)}
+        onOpenPayment={() => {
+          setPaymentTargetOrder(null);
+          setIsPaymentOpen(true);
+        }}
       />
 
       <OrderTrackerModal
         isOpen={isOrderTrackerOpen}
         onClose={() => setIsOrderTrackerOpen(false)}
-        onOpenPayment={() => setIsPaymentOpen(true)}
+        onOpenPayment={(targetOrd) => {
+          setPaymentTargetOrder(targetOrd || null);
+          setIsPaymentOpen(true);
+        }}
       />
 
       <ServiceCallModal
@@ -494,7 +501,11 @@ export const CustomerApp: React.FC = () => {
 
       <PaymentModal
         isOpen={isPaymentOpen}
-        onClose={() => setIsPaymentOpen(false)}
+        onClose={() => {
+          setIsPaymentOpen(false);
+          setPaymentTargetOrder(null);
+        }}
+        targetOrder={paymentTargetOrder}
       />
 
       <ReviewFeedbackModal

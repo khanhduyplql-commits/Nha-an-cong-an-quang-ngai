@@ -1,22 +1,29 @@
-import React, { useState } from 'react';
-import { X, QrCode, CheckCircle2, ShieldCheck, Copy, Check, Banknote, CreditCard, Sparkles, Receipt } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { X, QrCode, CheckCircle2, ShieldCheck, Copy, Check, Banknote, CreditCard, Sparkles, Receipt, Layers, CheckSquare, Square } from 'lucide-react';
 import { useRestaurant } from '../../context/RestaurantContext';
 import { TableOrder } from '../../types';
-import { formatVND, getVietQRUrl } from '../../utils/format';
+import { formatVND, getVietQRUrl, formatTimeHM } from '../../utils/format';
 import confetti from 'canvas-confetti';
 
 interface PaymentModalProps {
   isOpen: boolean;
   onClose: () => void;
   onPaymentSuccess?: () => void;
+  targetOrder?: TableOrder | null;
 }
 
-export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, onPaymentSuccess }) => {
+export const PaymentModal: React.FC<PaymentModalProps> = ({ 
+  isOpen, 
+  onClose, 
+  onPaymentSuccess,
+  targetOrder 
+}) => {
   const { 
     activeTableOrders, 
     activeTableNumber, 
     currentTable, 
     payOrder, 
+    payMultipleOrders,
     submitOrder,
     cart,
     cartTotal,
@@ -29,11 +36,25 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, onP
   const [discountPercent, setDiscountPercent] = useState(0);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isPaid, setIsPaid] = useState(false);
+  
+  // Selected orders to pay (default to all active orders or targetOrder)
+  const [selectedOrderIds, setSelectedOrderIds] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (targetOrder) {
+      setSelectedOrderIds([targetOrder.id]);
+    } else if (activeTableOrders.length > 0) {
+      setSelectedOrderIds(activeTableOrders.map(o => o.id));
+    } else {
+      setSelectedOrderIds([]);
+    }
+  }, [isOpen, targetOrder, activeTableOrders]);
 
   if (!isOpen) return null;
 
-  const existingOrdersTotal = activeTableOrders.reduce((sum, ord) => sum + ord.totalAmount, 0);
-  const rawTotal = existingOrdersTotal > 0 ? existingOrdersTotal : cartTotal;
+  const ordersToPay = activeTableOrders.filter(o => selectedOrderIds.includes(o.id));
+  const ordersTotal = ordersToPay.reduce((sum, ord) => sum + ord.totalAmount, 0);
+  const rawTotal = ordersToPay.length > 0 ? ordersTotal : (activeTableOrders.length === 0 ? cartTotal : 0);
   const discountAmount = Math.round(rawTotal * (discountPercent / 100));
   const finalTotal = Math.max(0, rawTotal - discountAmount);
 
@@ -44,6 +65,21 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, onP
     finalTotal,
     transferMemo
   );
+
+  const toggleSelectOrder = (orderId: string) => {
+    setSelectedOrderIds(prev => {
+      if (prev.includes(orderId)) {
+        if (prev.length === 1) return prev; // Keep at least one selected
+        return prev.filter(id => id !== orderId);
+      } else {
+        return [...prev, orderId];
+      }
+    });
+  };
+
+  const handleSelectAllOrders = () => {
+    setSelectedOrderIds(activeTableOrders.map(o => o.id));
+  };
 
   const handleApplyVoucher = () => {
     const code = voucherCode.trim().toUpperCase();
@@ -62,15 +98,23 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, onP
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const handleConfirmPaid = () => {
+  const handleConfirmPaid = async () => {
     setIsProcessing(true);
-    setTimeout(() => {
-      if (activeTableOrders.length > 0) {
-        activeTableOrders.forEach(o => {
+    
+    setTimeout(async () => {
+      if (ordersToPay.length > 0) {
+        const batchPayments = ordersToPay.map(o => {
           const oDiscount = Math.round(o.totalAmount * (discountPercent / 100));
           const oFinal = Math.max(0, o.totalAmount - oDiscount);
-          payOrder(o.id, paymentMethod, oFinal, o);
+          return {
+            id: o.id,
+            amount: oFinal,
+            paymentMethod,
+            order: o
+          };
         });
+
+        await payMultipleOrders(batchPayments);
       } else if (cart.length > 0) {
         const newOrder = submitOrder();
         payOrder(newOrder.id, paymentMethod, finalTotal, newOrder);
@@ -109,7 +153,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, onP
       if (onPaymentSuccess) {
         onPaymentSuccess();
       }
-    }, 1200);
+    }, 800);
   };
 
   return (
@@ -262,6 +306,69 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, onP
                 </div>
               )}
 
+              {/* Order Batches Breakdown for Multi-Order Tables */}
+              {activeTableOrders.length > 0 && (
+                <div className="bg-stone-50 rounded-2xl p-3.5 border border-stone-200 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5 text-xs font-bold text-stone-800">
+                      <Layers className="w-4 h-4 text-orange-600" />
+                      <span>Đợt gọi món tại bàn ({activeTableOrders.length} đợt)</span>
+                    </div>
+                    {activeTableOrders.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={handleSelectAllOrders}
+                        className="text-3xs font-semibold text-emerald-600 hover:text-emerald-700 cursor-pointer"
+                      >
+                        Chọn tất cả đợt
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
+                    {activeTableOrders.map((ord, idx) => {
+                      const isSelected = selectedOrderIds.includes(ord.id);
+                      return (
+                        <div
+                          key={ord.id}
+                          onClick={() => toggleSelectOrder(ord.id)}
+                          className={`p-2.5 rounded-xl border text-xs cursor-pointer transition-all flex items-center justify-between ${
+                            isSelected
+                              ? 'border-emerald-400 bg-emerald-50/50 text-emerald-950 shadow-2xs'
+                              : 'border-stone-200 bg-white text-stone-500 opacity-60'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2 min-w-0 pr-2">
+                            {isSelected ? (
+                              <CheckSquare className="w-4 h-4 text-emerald-600 shrink-0" />
+                            ) : (
+                              <Square className="w-4 h-4 text-stone-400 shrink-0" />
+                            )}
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-1.5">
+                                <span className="font-bold text-stone-900">{ord.orderNumber}</span>
+                                <span className="text-3xs text-stone-400">Đợt {idx + 1} ({formatTimeHM(ord.createdAt)})</span>
+                              </div>
+                              <p className="text-3xs text-stone-500 truncate">
+                                {ord.items.map(i => `${i.name} (x${i.quantity})`).join(', ')}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="text-right shrink-0">
+                            <span className="font-bold text-stone-900 block">{formatVND(ord.totalAmount)}</span>
+                            <span className="text-3xs text-emerald-600">Phiếu thu riêng</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <p className="text-3xs text-stone-500 italic">
+                    💡 Mỗi đợt gọi món / khách đặt món sẽ được tự động ghi nhận thành 01 Phiếu thu riêng biệt trong Quản lý Thu Chi.
+                  </p>
+                </div>
+              )}
+
               {/* Voucher Code Input */}
               <div className="space-y-1.5 pt-1">
                 <label className="block text-2xs font-bold text-stone-600 uppercase tracking-wider">
@@ -287,7 +394,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, onP
               {/* Bill summary breakdown */}
               <div className="bg-stone-50 rounded-2xl p-3.5 border border-stone-200 space-y-1.5 text-xs">
                 <div className="flex justify-between text-stone-600">
-                  <span>Tiền món ({activeTableOrders.length} lượt gọi):</span>
+                  <span>Tiền món ({ordersToPay.length} đợt thanh toán):</span>
                   <span className="font-semibold text-stone-800">{formatVND(rawTotal)}</span>
                 </div>
                 {discountPercent > 0 && (

@@ -1,12 +1,13 @@
 import React from 'react';
 import { X, Clock, CheckCircle2, Flame, CreditCard, RefreshCw, ChefHat, Sparkles, BellRing, Utensils } from 'lucide-react';
 import { useRestaurant } from '../../context/RestaurantContext';
+import { TableOrder } from '../../types';
 import { formatVND, formatTimeHM } from '../../utils/format';
 
 interface OrderTrackerModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onOpenPayment: () => void;
+  onOpenPayment: (targetOrder?: TableOrder) => void;
 }
 
 export const OrderTrackerModal: React.FC<OrderTrackerModalProps> = ({ isOpen, onClose, onOpenPayment }) => {
@@ -191,6 +192,26 @@ export const OrderTrackerModal: React.FC<OrderTrackerModalProps> = ({ isOpen, on
                       <strong>Ghi chú đơn:</strong> {order.note}
                     </div>
                   )}
+
+                  {/* Per-batch subtotal and payment option */}
+                  <div className="pt-2 border-t border-stone-200 flex items-center justify-between">
+                    <span className="text-2xs font-semibold text-stone-600">
+                      Tổng đợt {idx + 1}: <strong className="text-stone-900">{formatVND(order.totalAmount)}</strong>
+                    </span>
+
+                    {activeTableOrders.length > 1 && (
+                      <button
+                        onClick={() => {
+                          onClose();
+                          onOpenPayment(order);
+                        }}
+                        className="px-2.5 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-3xs font-bold border border-emerald-200 transition-colors flex items-center gap-1 cursor-pointer"
+                      >
+                        <CreditCard className="w-3 h-3 text-emerald-600" />
+                        <span>Thanh toán riêng đợt này</span>
+                      </button>
+                    )}
+                  </div>
                 </div>
               );
             })

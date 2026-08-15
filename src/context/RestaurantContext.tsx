@@ -62,6 +62,9 @@ interface RestaurantContextType {
     customAmount?: number, 
     explicitOrder?: TableOrder
   ) => void;
+  payMultipleOrders: (
+    ordersToPay: { id: string; amount: number; paymentMethod?: 'vietqr' | 'momo' | 'cash' | 'card'; order?: TableOrder }[]
+  ) => Promise<void>;
 
   // Service Calls
   serviceCalls: ServiceCall[];
@@ -462,30 +465,48 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             }
           }
         }
-      } else if (type === 'pay_order' || type === 'order_paid') {
-        const orderId = event.orderId || event.id || event.data?.orderId || event.data?.id;
-        const paymentMethod = event.paymentMethod || event.data?.paymentMethod || 'vietqr';
-        const tableNumber = event.tableNumber || event.data?.tableNumber;
-
-        if (orderId) {
-          setOrders(prev => prev.map(o => o.id === orderId ? { ...o, paymentStatus: 'paid', status: 'paid', paymentMethod: paymentMethod as any } : o));
+      } else if (type === 'pay_order' || type === 'order_paid' || type === 'orders_paid_batch') {
+        const payments = event.data?.payments || (event.orderId ? [{ id: event.orderId, paymentMethod: event.paymentMethod, tableNumber: event.tableNumber }] : []);
+        if (Array.isArray(payments) && payments.length > 0) {
+          const pOrderIds = new Set(payments.map((p: any) => p.id));
+          setOrders(prev => prev.map(o => {
+            if (pOrderIds.has(o.id)) {
+              const pItem = payments.find((p: any) => p.id === o.id);
+              return { ...o, paymentStatus: 'paid', status: 'paid', paymentMethod: pItem?.paymentMethod || o.paymentMethod || 'vietqr' };
+            }
+            return o;
+          }));
+        } else if (event.orderId || event.id) {
+          const oId = event.orderId || event.id;
+          setOrders(prev => prev.map(o => o.id === oId ? { ...o, paymentStatus: 'paid', status: 'paid', paymentMethod: event.paymentMethod || 'vietqr' } : o));
         }
-        if (tableNumber) {
-          setTables(prev => prev.map(t => t.number === tableNumber ? { ...t, status: 'empty', activeOrderId: undefined } : t));
+
+        const tableNum = event.tableNumber || event.data?.tableNumber;
+        if (tableNum) {
+          setTables(prev => prev.map(t => {
+            if (t.number === tableNum) {
+              const otherUnpaid = orders.filter(o => o.tableNumber === tableNum && o.paymentStatus === 'unpaid');
+              if (otherUnpaid.length <= 1) {
+                return { ...t, status: 'empty', activeOrderId: undefined };
+              }
+            }
+            return t;
+          }));
         }
 
         // Direct cashflow receipt ingestion from pay event
-        const incomingTx = event.transaction || event.data?.transaction;
-        if (incomingTx && incomingTx.id) {
-          setTransactions(prev => {
-            if (prev.some(t => t.id === incomingTx.id || (incomingTx.orderId && t.orderId === incomingTx.orderId))) return prev;
-            return [incomingTx, ...prev];
-          });
-        }
+        const incomingTxs: CashTransaction[] = [];
+        if (event.transaction) incomingTxs.push(event.transaction);
+        if (event.data?.transaction) incomingTxs.push(event.data.transaction);
+        if (Array.isArray(event.transactions)) incomingTxs.push(...event.transactions);
+        if (Array.isArray(event.data?.transactions)) incomingTxs.push(...event.data.transactions);
 
-        const incomingTxs = event.transactions || event.data?.transactions;
-        if (Array.isArray(incomingTxs) && incomingTxs.length > 0) {
-          setTransactions(incomingTxs);
+        if (incomingTxs.length > 0) {
+          setTransactions(prev => {
+            const incomingIds = new Set(incomingTxs.map(t => t.id));
+            const filtered = prev.filter(t => !incomingIds.has(t.id));
+            return [...incomingTxs, ...filtered];
+          });
         }
 
         playNotificationSound('success');
@@ -962,11 +983,14 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       });
     });
 
-    // 3. Reset table status
+    // 3. Reset table status only if no other unpaid orders remain for this table
     if (tableNum) {
       setTables(prev => prev.map(t => {
         if (t.number === tableNum) {
-          return { ...t, status: 'empty', activeOrderId: undefined };
+          const otherUnpaid = orders.filter(o => o.tableNumber === tableNum && o.id !== orderId && o.paymentStatus === 'unpaid');
+          if (otherUnpaid.length === 0) {
+            return { ...t, status: 'empty', activeOrderId: undefined };
+          }
         }
         return t;
       }));
@@ -1003,7 +1027,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       };
 
       setTransactions(prev => {
-        // Prevent duplicate by orderId or id
+        // Prevent duplicate only for the exact same order re-paid, keep all other orders/transactions
         const filtered = prev.filter(t => t.id !== autoTx!.id && (!autoTx!.orderId || t.orderId !== autoTx!.orderId));
         const next = [autoTx!, ...filtered];
         try {
@@ -1049,6 +1073,118 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       }
     })
     .catch(console.error);
+  };
+
+  // Pay multiple orders at once (e.g. paying for all batches / multiple guests at the same table)
+  const payMultipleOrders = async (
+    ordersToPay: { id: string; amount: number; paymentMethod?: 'vietqr' | 'momo' | 'cash' | 'card'; order?: TableOrder }[]
+  ) => {
+    if (!ordersToPay || ordersToPay.length === 0) return;
+
+    const d = new Date();
+    const dateStr = getLocalDateString(d);
+    const orderIds = new Set(ordersToPay.map(p => p.id));
+    const affectedTableNumbers = new Set<string>();
+    const generatedReceipts: CashTransaction[] = [];
+
+    // 1. Update orders status in React state
+    setOrders(prev => prev.map(o => {
+      if (orderIds.has(o.id)) {
+        const item = ordersToPay.find(p => p.id === o.id);
+        return {
+          ...o,
+          paymentStatus: 'paid',
+          status: 'paid',
+          paymentMethod: (item?.paymentMethod || o.paymentMethod || 'vietqr') as any
+        };
+      }
+      return o;
+    }));
+
+    // 2. Generate separate transaction receipt for EACH order batch
+    ordersToPay.forEach((item, idx) => {
+      const order = item.order || orders.find(o => o.id === item.id);
+      const tableNum = order?.tableNumber || activeTableNumber;
+      affectedTableNumbers.add(tableNum);
+      const tableName = order?.tableName || `Bàn ${tableNum}`;
+      const orderNumber = order?.orderNumber || `#${item.id.slice(-4)}`;
+      const itemsList = order?.items && order.items.length > 0 
+        ? order.items.map(i => `${i.name} x${i.quantity}`).join(', ') 
+        : 'Thực đơn gọi món';
+      const customerPayer = order?.customerName || `Khách ${tableName}`;
+      const effectiveAmount = typeof item.amount === 'number' && item.amount > 0 ? item.amount : (order?.totalAmount || 0);
+
+      if (effectiveAmount > 0) {
+        const receipt: CashTransaction = {
+          id: `tx-auto-${item.id}-${Date.now()}-${idx}`,
+          receiptNumber: `PT-${dateStr.replace(/-/g, '')}-${Math.floor(100 + Math.random() * 900)}`,
+          type: 'income',
+          category: 'sales',
+          categoryName: 'Doanh thu bán hàng',
+          amount: effectiveAmount,
+          title: `Thu tiền ${tableName} (${orderNumber})`,
+          description: `Thanh toán ${(item.paymentMethod || order?.paymentMethod || 'vietqr').toUpperCase()}. Món: ${itemsList}`,
+          paymentMethod: (item.paymentMethod || order?.paymentMethod || 'vietqr') as any,
+          recordedBy: 'Hệ thống POS Thu ngân',
+          payerOrRecipient: customerPayer,
+          createdAt: Date.now() + idx,
+          dateString: dateStr,
+          orderId: item.id,
+          tableNumber: tableNum
+        };
+        generatedReceipts.push(receipt);
+      }
+    });
+
+    // 3. Reset table status if all orders at table are paid
+    setTables(prev => prev.map(t => {
+      if (affectedTableNumbers.has(t.number)) {
+        const otherUnpaid = orders.filter(o => o.tableNumber === t.number && !orderIds.has(o.id) && o.paymentStatus === 'unpaid');
+        if (otherUnpaid.length === 0) {
+          return { ...t, status: 'empty', activeOrderId: undefined };
+        }
+      }
+      return t;
+    }));
+
+    // 4. Update transactions state & localStorage
+    if (generatedReceipts.length > 0) {
+      setTransactions(prev => {
+        const newOrderIds = new Set(generatedReceipts.map(r => r.orderId));
+        const filtered = prev.filter(t => !t.orderId || !newOrderIds.has(t.orderId));
+        const next = [...generatedReceipts, ...filtered];
+        try {
+          localStorage.setItem('qr_dinein_transactions', JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+    }
+
+    playNotificationSound('success');
+
+    // 5. Broadcast to cloud sync
+    broadcastRealtimeEvent({
+      type: 'PAY_ORDER',
+      data: {
+        payments: ordersToPay,
+        transactions: generatedReceipts
+      }
+    }).catch(console.error);
+
+    // 6. Post to batch pay API
+    try {
+      const res = await fetch('/api/orders/pay-batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ payments: ordersToPay })
+      });
+      const data = await res.json();
+      if (data && Array.isArray(data.transactions)) {
+        setTransactions(data.transactions);
+      }
+    } catch (err) {
+      console.warn('Batch pay API error:', err);
+    }
   };
 
   // Cashflow Management functions
@@ -1273,6 +1409,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         updateOrderStatus,
         updateOrderItemStatus,
         payOrder,
+        payMultipleOrders,
         serviceCalls,
         requestService,
         resolveServiceCall,
